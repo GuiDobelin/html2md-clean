@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "html2md-clean"
+version = "0.1.0"
+description = "Convert web pages into clean Markdown without boilerplate, using only the standard library"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "GuiDobelin" }]
+keywords = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+html2md-clean = "html2md_clean.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/GuiDobelin/html2md-clean"
+Issues = "https://github.com/GuiDobelin/html2md-clean/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/html2md_clean"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
