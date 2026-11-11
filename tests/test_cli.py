@@ -128,8 +128,47 @@ def test_empty_result_warns(tmp_path, capsys):
     assert "no content found" in captured.err
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "nan"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
 def test_timeout_must_be_positive(value, page_file, capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main([str(page_file), "--timeout", value])
     assert exc.value.code == 2
+
+
+def test_explicit_dash_reads_a_terminal(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", FakeStdin(b"<p>typed</p>", tty=True))
+    assert cli.main(["-"]) == 0
+    assert capsys.readouterr().out == "typed\n"
+
+
+def test_missing_stdin_is_a_usage_error(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", None)
+    with pytest.raises(SystemExit) as exc:
+        cli.main([])
+    assert exc.value.code == 2
+
+
+def test_title_heading_is_escaped(tmp_path, capsys):
+    path = tmp_path / "p.html"
+    path.write_text("<title>Issue *42* #</title><p>x</p>", encoding="utf-8")
+    assert cli.main([str(path), "--title"]) == 0
+    assert capsys.readouterr().out == "# Issue \\*42\\* \\#\n\nx\n"
+
+
+def test_closed_stdout_is_not_an_error(page_file, monkeypatch, capsys):
+    class ClosedPipe:
+        def write(self, data):
+            raise BrokenPipeError
+
+        def flush(self):
+            pass
+
+    class FakeStdout:
+        buffer = ClosedPipe()
+
+        def fileno(self):
+            raise OSError("no file descriptor")
+
+    monkeypatch.setattr(sys, "stdout", FakeStdout())
+    assert cli.main([str(page_file)]) == 0
+    assert capsys.readouterr().err == ""

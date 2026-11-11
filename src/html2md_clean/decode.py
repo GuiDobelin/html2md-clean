@@ -19,6 +19,8 @@ _META_CHARSET = re.compile(
     rb"""<meta[^>]+?charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""",
     re.I,
 )
+# XHTML served as XML declares its encoding here instead of in a <meta>.
+_XML_DECLARATION = re.compile(rb"""\s*<\?xml[^>]*?encoding\s*=\s*["']([A-Za-z0-9._:-]+)""")
 _HEADER_CHARSET = re.compile(r"""charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""", re.I)
 
 
@@ -40,8 +42,9 @@ def decode_html(data: bytes, content_type: str | None = None) -> str:
     """Decode an HTML document.
 
     The encoding comes from, in order: a byte order mark, the charset of the HTTP
-    ``Content-Type`` header, a ``<meta charset>`` declaration in the first 4 KiB, and finally
-    UTF-8. Undecodable bytes become U+FFFD instead of raising.
+    ``Content-Type`` header, an ``<?xml encoding?>`` declaration, a ``<meta charset>``
+    declaration in the first 4 KiB, and finally UTF-8. Undecodable bytes become U+FFFD instead
+    of raising.
     """
     for bom, encoding in _BOMS:
         if data.startswith(bom):
@@ -49,6 +52,8 @@ def decode_html(data: bytes, content_type: str | None = None) -> str:
     encoding = None
     if content_type and (match := _HEADER_CHARSET.search(content_type)):
         encoding = _codec(match[1])
+    if encoding is None and (match := _XML_DECLARATION.match(data[:1024])):
+        encoding = _codec(match[1].decode("ascii"))
     if encoding is None and (match := _META_CHARSET.search(data[:4096])):
         encoding = _codec(match[1].decode("ascii"))
         # A document that is readable as ASCII to find its <meta> cannot be UTF-16 or UTF-32;

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import http.client
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -13,7 +15,7 @@ __all__ = ["FetchError", "Response", "fetch"]
 
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
-_HTML_TYPES = frozenset({"text/html", "application/xhtml+xml", "text/plain"})
+_HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _CHUNK = 64 * 1024
 
 
@@ -54,18 +56,22 @@ def fetch(
 ) -> Response:
     """Download ``url`` and return its body, content type and final URL.
 
+    ``timeout`` bounds the whole download, not only each network read, so a server that
+    trickles bytes cannot keep it going forever.
+
     Raises:
-        FetchError: for non-HTTP URLs, network errors, HTTP error statuses, bodies larger than
-            ``max_bytes`` and content types that are not HTML or plain text.
+        FetchError: for non-HTTP URLs, network errors, timeouts, HTTP error statuses, bodies
+            larger than ``max_bytes`` and content types that are not HTML.
     """
     _check_scheme(url)
     request = urllib.request.Request(
         url,
         headers={
             "User-Agent": f"html2md-clean/{__version__} (+https://github.com/GuiDobelin/html2md-clean)",
-            "Accept": "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.5",
+            "Accept": "text/html,application/xhtml+xml;q=0.9",
         },
     )
+    deadline = time.monotonic() + timeout
     try:
         with (opener or _default_opener()).open(request, timeout=timeout) as response:
             content_type = response.headers.get("Content-Type")
@@ -74,7 +80,11 @@ def fetch(
                 raise FetchError(f"not an HTML page ({media_type}): {url}")
             chunks: list[bytes] = []
             size = 0
-            while chunk := response.read(_CHUNK):
+            # read1 returns what has arrived instead of waiting for a full chunk.
+            read = getattr(response, "read1", response.read)
+            while chunk := read(_CHUNK):
+                if time.monotonic() > deadline:
+                    raise TimeoutError
                 size += len(chunk)
                 if size > max_bytes:
                     raise FetchError(f"page is larger than {max_bytes} bytes: {url}")
@@ -88,3 +98,6 @@ def fetch(
         raise FetchError(f"timed out after {timeout:g}s: {url}") from exc
     except ValueError as exc:
         raise FetchError(f"invalid URL {url}: {exc}") from exc
+    except (http.client.HTTPException, OSError) as exc:
+        # Connection resets and truncated bodies (IncompleteRead) while reading.
+        raise FetchError(f"could not fetch {url}: {exc!r}") from exc

@@ -53,3 +53,11 @@ def test_meta_after_first_4k_is_ignored():
 @pytest.mark.parametrize("label", ["ISO_8859-1", "cp819", "iso-ir-100", "latin_1", "US-ASCII"])
 def test_every_latin1_alias_means_windows_1252(label):
     assert decode_html(b"\x93hi\x94", f"text/html; charset={label}") == "“hi”"
+
+
+def test_xml_declaration_names_the_encoding():
+    data = '<?xml version="1.0" encoding="ISO-8859-1"?>\n<p>é</p>'.encode("latin-1")
+    assert decode_html(data).endswith("<p>é</p>")
+    # The HTTP header still wins.
+    data = "<?xml encoding='latin-1'?><p>é</p>".encode()
+    assert decode_html(data, "text/html; charset=utf-8").endswith("<p>é</p>")
