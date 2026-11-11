@@ -308,3 +308,48 @@ def test_deeply_nested_html_does_not_crash():
 def test_rejects_bytes():
     with pytest.raises(TypeError, match="decode_html"):
         convert(b"<p>x</p>")  # type: ignore[arg-type]
+
+
+def test_highlighted_code_keeps_comments():
+    prose = "<p>" + "Some explanation of the example. " * 10 + "</p>"
+    html = prose + (
+        '<pre><code class="language-py"><span class="token comment"># note</span>\nx = 1\n'
+        '<span class="hljs-comment">// other</span></code></pre>'
+        '<p>Inline <code><span class="token comment">/* c */</span></code></p>'
+    )
+    assert md(html).endswith("```py\n# note\nx = 1\n// other\n```\n\nInline `/* c */`")
+
+
+def test_main_holding_only_chrome_falls_back_to_articles():
+    html = "<main><nav>Home Blog About Contact</nav></main><article><p>Post</p></article>"
+    assert md(html) == "Post"
+    assert md("<main><aside>Accept cookies</aside></main><p>Text</p>") == "Text"
+
+
+def test_adjacent_lists_stay_separate():
+    html = "<ul><li>a</ul><ul><li>b</ul><ul><li>c</ul><ol><li>1</ol><ol><li>2</ol>"
+    assert md(html) == "- a\n\n* b\n\n- c\n\n1. 1\n\n1) 2"
+    nested = "<ul><li>x<ul><li>a</ul><ul><li>b</ul></li></ul>"
+    assert md(nested) == "- x\n  - a\n\n  * b"
+
+
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        ("<b>Note:</b>Text", "**Note**:Text"),
+        ("a<em>(b)</em>c", "a(*b*)c"),
+        ("<b>“Quote.”</b>", "“**Quote**.”"),
+        ("<b>...</b>", "**...**"),
+        # Escaped brackets stay whole inside the markers.
+        ("<b>[x]</b>", "**\\[x\\]**"),
+    ],
+)
+def test_emphasis_moves_edge_punctuation_outside(html, expected):
+    assert md(f"<p>{html}</p>") == expected
+
+
+def test_unclosed_elements_past_max_depth_do_not_eat_end_tags():
+    deep = "<div>" * (MAX_DEPTH + 5)
+    html = deep + "<ul><li>a<li>b</ul>" + "</div>" * (MAX_DEPTH + 5) + "<p>after</p>"
+    assert md(html).endswith("after")
+    assert md(html, full=True).endswith("\n\nafter")

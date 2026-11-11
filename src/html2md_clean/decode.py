@@ -12,10 +12,9 @@ _BOMS = (
     (codecs.BOM_UTF16_LE, "utf-16-le"),
     (codecs.BOM_UTF16_BE, "utf-16-be"),
 )
-# The WHATWG Encoding Standard decodes these labels as windows-1252, and so do browsers.
-_WINDOWS_1252 = frozenset(
-    {"ascii", "us-ascii", "iso-8859-1", "iso8859-1", "latin1", "latin-1", "l1"}
-)
+# The WHATWG Encoding Standard decodes ASCII and ISO-8859-1 as windows-1252, and so do browsers.
+# Compared by codec name, so every alias (latin_1, cp819, iso-ir-100, ...) is covered.
+_WINDOWS_1252 = frozenset({"ascii", "iso8859-1"})
 _META_CHARSET = re.compile(
     rb"""<meta[^>]+?charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""",
     re.I,
@@ -26,16 +25,15 @@ _HEADER_CHARSET = re.compile(r"""charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""", re
 def _codec(label: str | None) -> str | None:
     if not label:
         return None
-    label = label.strip().lower()
-    if label in _WINDOWS_1252:
-        return "cp1252"
     try:
-        info = codecs.lookup(label)
+        info = codecs.lookup(label.strip())
     except LookupError:
         return None
     # Binary-to-binary and str-to-str codecs such as base64 or rot13 are not text encodings.
     # bytes.decode() refuses them using this same flag.
-    return info.name if getattr(info, "_is_text_encoding", True) else None
+    if not getattr(info, "_is_text_encoding", True):
+        return None
+    return "cp1252" if info.name in _WINDOWS_1252 else info.name
 
 
 def decode_html(data: bytes, content_type: str | None = None) -> str:

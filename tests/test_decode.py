@@ -48,3 +48,8 @@ def test_unknown_or_non_text_codecs_fall_back_to_utf8(label):
 def test_meta_after_first_4k_is_ignored():
     data = b" " * 4096 + '<meta charset="cp1251"><p>é</p>'.encode()
     assert decode_html(data).endswith("<p>é</p>")
+
+
+@pytest.mark.parametrize("label", ["ISO_8859-1", "cp819", "iso-ir-100", "latin_1", "US-ASCII"])
+def test_every_latin1_alias_means_windows_1252(label):
+    assert decode_html(b"\x93hi\x94", f"text/html; charset={label}") == "“hi”"
