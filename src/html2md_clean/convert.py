@@ -120,6 +120,7 @@ _MODIFIER_WORDS = frozenset({"has", "with", "no", "without"})
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
 _SECTIONING = frozenset({"main", "article", "section"})
 _NEVER_GUESS = frozenset({"html", "body", "main", "article"})
+_CODE = frozenset({"pre", "code", "kbd", "samp", "tt"})
 
 _HEADINGS = {f"h{n}": n for n in range(1, 7)}
 _BLOCK = frozenset(
@@ -202,7 +203,8 @@ class _TreeBuilder(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.root = _Node("#document", {})
         self._stack = [self.root]
-        self._overflow = 0
+        # Tags opened past MAX_DEPTH, which were not pushed and must not close real elements.
+        self._overflow: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         self._open(tag, attrs, self_closing=False)
@@ -213,8 +215,8 @@ class _TreeBuilder(HTMLParser):
         self._open(tag, attrs, self_closing=True)
 
     def handle_endtag(self, tag):
-        if self._overflow:
-            self._overflow -= 1
+        if tag in self._overflow:
+            del self._overflow[len(self._overflow) - 1 - self._overflow[::-1].index(tag)]
             return
         stack = self._stack
         for i in range(len(stack) - 1, 0, -1):
@@ -235,7 +237,7 @@ class _TreeBuilder(HTMLParser):
         if tag in _VOID or self_closing:
             return
         if len(self._stack) > MAX_DEPTH:
-            self._overflow += 1
+            self._overflow.append(tag)
             return
         self._stack.append(node)
 
@@ -317,7 +319,7 @@ def _holds_content(node: _Node, root_len: int) -> bool:
     return 2 * _text_len(node) > root_len or _contains(node, frozenset({"main", "h1"}))
 
 
-def _drop(node: _Node, full: bool, sectioned: bool, root_len: int) -> bool:
+def _drop(node: _Node, full: bool, sectioned: bool, root_len: int, guess: bool = True) -> bool:
     if node.tag in _NON_CONTENT or _is_hidden(node):
         return True
     if full:
@@ -331,18 +333,21 @@ def _drop(node: _Node, full: bool, sectioned: bool, root_len: int) -> bool:
     roles = node.attrs.get("role", "").lower().split()
     if roles and roles[0] in _CHROME_ROLES:
         return True
-    if node.tag in _NEVER_GUESS:
+    # Syntax highlighters mark up code with classes such as "token comment" or "hljs-comment".
+    if not guess or node.tag in _NEVER_GUESS:
         return False
     return _named_like_chrome(node) and not _holds_content(node, root_len)
 
 
-def _prune(node: _Node, full: bool, sectioned: bool, root_len: int) -> None:
+def _prune(node: _Node, full: bool, sectioned: bool, root_len: int, in_code: bool = False) -> None:
     kept: list[_Node | str] = []
     for child in node.children:
         if isinstance(child, _Node):
-            if _drop(child, full, sectioned, root_len):
+            if _drop(child, full, sectioned, root_len, guess=not in_code):
                 continue
-            _prune(child, full, sectioned or child.tag in _SECTIONING, root_len)
+            sectioned_child = sectioned or child.tag in _SECTIONING
+            code_child = in_code or child.tag in _CODE
+            _prune(child, full, sectioned_child, root_len, code_child)
         kept.append(child)
     node.children = kept
 
@@ -357,8 +362,12 @@ def _is_main(node: _Node) -> bool:
     return node.tag == "main" or node.attrs.get("role", "").lower().split()[:1] == ["main"]
 
 
-def _content_roots(doc: _Node) -> list[_Node]:
-    """Return the elements that hold the page's content, in document order."""
+def _content_roots(doc: _Node) -> list[list[_Node]]:
+    """Return candidate sets of content elements, best first, ending with the whole page.
+
+    The text lengths used to choose include chrome, so a candidate can come out empty once
+    pruned (a <main> holding only a menu); the caller then moves on to the next one.
+    """
     page_len = _text_len(doc)
     mains: list[_Node] = []
     articles: list[_Node] = []
@@ -375,11 +384,14 @@ def _content_roots(doc: _Node) -> list[_Node]:
             walk(child, in_article or child.tag == "article")
 
     walk(doc, in_article=False)
+    candidates = []
     best_main = max(mains, key=_text_len, default=None)
     if best_main is not None and _text_len(best_main):
-        return [best_main]
-    articles = [article for article in articles if _text_len(article)]
-    return articles or [doc]
+        candidates.append([best_main])
+    if articles := [article for article in articles if _text_len(article)]:
+        candidates.append(articles)
+    candidates.append([doc])
+    return candidates
 
 
 def _raw_text(node: _Node) -> str:
@@ -438,6 +450,8 @@ def _effective_base(doc: _Node, base_url: str | None) -> str | None:
     return joined if _has_scheme(joined) else base_url
 
 
+_OPENING_PUNCT = "([{\"'\u201c\u2018\u00ab"
+_CLOSING_PUNCT = ".,:;!?)]}\"'\u201d\u2019\u00bb"
 _ESCAPE = re.compile(r"[\\`*\[\]~]|<(?=[A-Za-z/!?])|&(?=#?\w+;)")
 # "_" only starts emphasis next to a non-alphanumeric character; snake_case needs no escape.
 _UNDERSCORE = re.compile(r"(?<![^\W_])_|_(?![^\W_])")
@@ -521,11 +535,11 @@ class _Renderer:
                 inline.append(self._inline_node(child))
             else:
                 flush()
-                blocks.extend(self._block_node(child))
+                blocks.extend(self._block_node(child, blocks[-1][0] if blocks else None))
         flush()
         return blocks
 
-    def _block_node(self, node: _Node) -> list[tuple[str, str]]:
+    def _block_node(self, node: _Node, previous: str | None) -> list[tuple[str, str]]:
         tag = node.tag
         if tag in _HEADINGS:
             text = _oneline(self._inline(node))
@@ -533,7 +547,9 @@ class _Renderer:
                 text = text[:-1] + "\\#"
             return [("h", f"{'#' * _HEADINGS[tag]} {text}")] if text else []
         if tag in ("ul", "ol", "menu"):
-            return self._list(node, ordered=tag == "ol")
+            kind = "ol" if tag == "ol" else "ul"
+            # Two lists in a row with the same marker would merge into one list.
+            return self._list(node, ordered=kind == "ol", alt=previous == kind)
         if tag == "pre":
             return self._pre(node)
         if tag == "blockquote":
@@ -552,14 +568,16 @@ class _Renderer:
         # A trailing backslash is a hard line break, which is what <br> means.
         return "\\\n".join(_escape_line_start(line) for line in lines if line)
 
-    def _list(self, node: _Node, ordered: bool) -> list[tuple[str, str]]:
+    def _list(self, node: _Node, ordered: bool, alt: bool = False) -> list[tuple[str, str]]:
         items: list[list[tuple[str, str]]] = []
         for child in node.children:
             if isinstance(child, str):
                 text = self._paragraph(self._text(child))
                 blocks = [("p", text)] if text else []
             elif child.tag in ("ul", "ol"):
-                blocks = self._list(child, ordered=child.tag == "ol")
+                previous = items[-1][-1][0] if items else None
+                kind = child.tag
+                blocks = self._list(child, ordered=kind == "ol", alt=previous == kind)
                 # <ul><li>a</li><ul>...</ul></ul> is invalid but common: the nested list
                 # belongs to the previous item.
                 if items:
@@ -576,17 +594,19 @@ class _Renderer:
             return []
 
         number = _list_start(node) if ordered else 1
-        loose = any(sum(kind != "list" for kind, _ in blocks) > 1 for blocks in items)
+        loose = any(sum(not _is_list(kind) for kind, _ in blocks) > 1 for blocks in items)
         rendered = []
         for blocks in items:
-            marker = f"{number}." if ordered else "-"
+            marker = f"{number}{')' if alt else '.'}" if ordered else "*" if alt else "-"
             number += 1
             body = blocks[0][1]
             for (prev_kind, _), (kind, text) in zip(blocks, blocks[1:], strict=False):
-                body += ("\n" if kind == "list" and prev_kind == "p" else "\n\n") + text
+                body += ("\n" if _is_list(kind) and prev_kind == "p" else "\n\n") + text
             indent = " " * (len(marker) + 1)
             rendered.append(f"{marker} " + re.sub(r"\n(?=[^\n])", "\n" + indent, body))
-        return [("list", ("\n\n" if loose else "\n").join(rendered))]
+        kind = "ol" if ordered else "ul"
+        # An alternate-marker list is a different kind, so a third list goes back to the default.
+        return [(kind + "-alt" if alt else kind, ("\n\n" if loose else "\n").join(rendered))]
 
     def _pre(self, node: _Node) -> list[tuple[str, str]]:
         text = _raw_text(node)
@@ -674,7 +694,21 @@ class _Renderer:
             lead, core, trail = _split_space(self._inline(node))
         finally:
             self._marks.discard(mark)
-        return f"{lead}{mark}{core}{mark}{trail}" if core else lead
+        if not core:
+            return lead
+        # CommonMark only closes "**Note:**" before a space or punctuation, so "**Note:**Text"
+        # would print the asterisks. Punctuation at the edges is moved outside the markers.
+        inner = core.lstrip(_OPENING_PUNCT)
+        start = len(core) - len(inner)
+        end = len(inner.rstrip(_CLOSING_PUNCT))
+        # Keep escaped characters (\]) whole, and keep all-punctuation text as it is.
+        while end < len(inner) and end and inner[end - 1] == "\\":
+            end += 1
+        if not inner[:end]:
+            return f"{lead}{mark}{core}{mark}{trail}"
+        lead += core[:start]
+        trail = inner[end:] + trail
+        return f"{lead}{mark}{inner[:end]}{mark}{trail}"
 
     def _link(self, node: _Node) -> str:
         if self._in_link or not self.links:
@@ -723,6 +757,10 @@ class _Renderer:
         if _has_scheme(url) and url.split(":", 1)[0].lower() in ("javascript", "vbscript", "data"):
             return None
         return urljoin(self.base_url, url) if self.base_url else url
+
+
+def _is_list(kind: str) -> bool:
+    return kind.startswith(("ul", "ol"))
 
 
 def _list_start(node: _Node) -> int:
@@ -789,13 +827,16 @@ def convert(
 
     title = _page_title(doc)
     renderer = _Renderer(_effective_base(doc, base_url), links=links, images=images)
-    parts = []
-    for root in [doc] if full else _content_roots(doc):
-        sectioned = root.tag in _SECTIONING or _is_main(root)
-        _prune(root, full, sectioned, _text_len(root))
-        _mark_blocks(root)
-        if markdown := renderer.render(root):
-            parts.append(markdown)
+    parts: list[str] = []
+    for roots in [[doc]] if full else _content_roots(doc):
+        for root in roots:
+            sectioned = root.tag in _SECTIONING or _is_main(root)
+            _prune(root, full, sectioned, _text_len(root))
+            _mark_blocks(root)
+            if markdown := renderer.render(root):
+                parts.append(markdown)
+        if parts:
+            break
     return Page(title=title, markdown="\n\n".join(parts))
 
 
