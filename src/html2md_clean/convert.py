@@ -45,6 +45,8 @@ _VOID = frozenset(
 _NON_CONTENT = frozenset(
     {
         "head",
+        # <head> is optional in HTML, so <title> can appear without one.
+        "title",
         "script",
         "style",
         "template",

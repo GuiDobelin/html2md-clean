@@ -285,6 +285,10 @@ def test_self_closing_non_void_elements_do_not_swallow_the_page():
     assert md('<p><a name="top"/>Title</p><p>Next</p>') == "Title\n\nNext"
 
 
+def test_title_without_head_is_not_content():
+    assert convert("<title>T</title><p>x</p>") == Page(title="T", markdown="x")
+
+
 def test_title_fallbacks():
     assert convert("<svg><title>icon</title></svg><h1>Head</h1>").title == "Head"
     meta = '<meta property="og:title" content=" OG  title "><h1>H</h1>'
