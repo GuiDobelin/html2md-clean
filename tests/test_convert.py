@@ -340,6 +340,10 @@ def test_adjacent_lists_stay_separate():
         ("a<em>(b)</em>c", "a(*b*)c"),
         ("<b>“Quote.”</b>", "“**Quote**.”"),
         ("<b>...</b>", "**...**"),
+        ('<b><a href="/x">link</a></b>', "**[link](/x)**"),
+        ('<b>(<a href="/x">link</a>).</b>x', "(**[link](/x)**).x"),
+        ('<em><span><img src="/a.png" alt="a"></span></em>', "*![a](/a.png)*"),
+        ("<b>see <code>f()</code></b>", "**see `f()`**"),
         # Escaped brackets stay whole inside the markers.
         ("<b>[x]</b>", "**\\[x\\]**"),
     ],
