@@ -450,8 +450,9 @@ def _effective_base(doc: _Node, base_url: str | None) -> str | None:
     return joined if _has_scheme(joined) else base_url
 
 
-_OPENING_PUNCT = "([{\"'\u201c\u2018\u00ab"
-_CLOSING_PUNCT = ".,:;!?)]}\"'\u201d\u2019\u00bb"
+# Never escaped by _escape, so their count in the raw text matches the rendered text.
+_OPENING_PUNCT = "({\"'\u201c\u2018\u00ab"
+_CLOSING_PUNCT = ".,:;!?)}\"'\u201d\u2019\u00bb"
 _ESCAPE = re.compile(r"[\\`*\[\]~]|<(?=[A-Za-z/!?])|&(?=#?\w+;)")
 # "_" only starts emphasis next to a non-alphanumeric character; snake_case needs no escape.
 _UNDERSCORE = re.compile(r"(?<![^\W_])_|_(?![^\W_])")
@@ -697,18 +698,15 @@ class _Renderer:
         if not core:
             return lead
         # CommonMark only closes "**Note:**" before a space or punctuation, so "**Note:**Text"
-        # would print the asterisks. Punctuation at the edges is moved outside the markers.
-        inner = core.lstrip(_OPENING_PUNCT)
-        start = len(core) - len(inner)
-        end = len(inner.rstrip(_CLOSING_PUNCT))
-        # Keep escaped characters (\]) whole, and keep all-punctuation text as it is.
-        while end < len(inner) and end and inner[end - 1] == "\\":
-            end += 1
-        if not inner[:end]:
+        # would print the asterisks. Punctuation at the edges of the text is moved outside the
+        # markers; link and image markup such as "[a](/b)" at an edge is never split.
+        head = _edge_text(node, last=False)
+        tail = _edge_text(node, last=True)
+        start = len(head) - len(head.lstrip(_OPENING_PUNCT))
+        end = len(core) - (len(tail) - len(tail.rstrip(_CLOSING_PUNCT)))
+        if start >= end:
             return f"{lead}{mark}{core}{mark}{trail}"
-        lead += core[:start]
-        trail = inner[end:] + trail
-        return f"{lead}{mark}{inner[:end]}{mark}{trail}"
+        return f"{lead}{core[:start]}{mark}{core[start:end]}{mark}{core[end:]}{trail}"
 
     def _link(self, node: _Node) -> str:
         if self._in_link or not self.links:
@@ -757,6 +755,20 @@ class _Renderer:
         if _has_scheme(url) and url.split(":", 1)[0].lower() in ("javascript", "vbscript", "data"):
             return None
         return urljoin(self.base_url, url) if self.base_url else url
+
+
+def _edge_text(node: _Node, last: bool) -> str:
+    """Return the visible text at the start (or end) of ``node``; "" if markup comes first."""
+    children = reversed(node.children) if last else iter(node.children)
+    for child in children:
+        if isinstance(child, str):
+            if child.strip():
+                return child.strip()
+        elif child.tag in ("a", "img", "code", "kbd", "samp", "tt"):
+            return ""
+        elif child.tag != "br":
+            return _edge_text(child, last)
+    return ""
 
 
 def _is_list(kind: str) -> bool:
