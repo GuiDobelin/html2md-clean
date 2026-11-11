@@ -1,10 +1,14 @@
 import argparse
+import contextlib
+import html
 import json
+import math
+import os
 import sys
 from pathlib import Path
 
 from html2md_clean import __version__
-from html2md_clean.convert import _escape, convert
+from html2md_clean.convert import convert, html_to_markdown
 from html2md_clean.decode import decode_html
 from html2md_clean.fetch import DEFAULT_TIMEOUT, FetchError, fetch
 
@@ -20,7 +24,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "source",
         nargs="?",
-        default="-",
         help="an HTML file, an http(s) URL, or - to read standard input (the default)",
     )
     parser.add_argument("-o", "--output", default="-", help="write to this file (default: stdout)")
@@ -45,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         default=DEFAULT_TIMEOUT,
-        help=f"seconds to wait for a URL (default: {DEFAULT_TIMEOUT:g})",
+        help=f"seconds allowed to download a URL (default: {DEFAULT_TIMEOUT:g})",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -65,8 +68,14 @@ def _read(source: str, timeout: float) -> tuple[str, str | None]:
 
 def _write(text: str, output: str) -> None:
     if output == "-":
-        sys.stdout.buffer.write(text.encode("utf-8"))
-        sys.stdout.buffer.flush()
+        try:
+            sys.stdout.buffer.write(text.encode("utf-8"))
+            sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            # The reader (e.g. `| head`) is gone, which is not an error. Point stdout at devnull
+            # so the flush at interpreter exit does not complain again.
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     else:
         Path(output).write_text(text, encoding="utf-8", newline="\n")
 
@@ -74,19 +83,22 @@ def _write(text: str, output: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not args.timeout > 0:
+    if not (args.timeout > 0 and math.isfinite(args.timeout)):
         parser.error("--timeout must be a positive number")
-    if args.source == "-" and sys.stdin.isatty():
-        parser.error("no input: pass an HTML file or URL, or pipe HTML into standard input")
+    if args.source is None:
+        # An explicit "-" may be typed or pasted at a terminal; no argument at all is a mistake.
+        if sys.stdin is None or sys.stdin.isatty():
+            parser.error("no input: pass an HTML file or URL, or pipe HTML into standard input")
+        args.source = "-"
 
     try:
-        html, fetched_url = _read(args.source, args.timeout)
+        document, fetched_url = _read(args.source, args.timeout)
     except (FetchError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     page = convert(
-        html,
+        document,
         base_url=args.base_url or fetched_url,
         full=args.full,
         links=not args.no_links,
@@ -105,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             "---"
         )
     if args.title and page.title and not page.markdown.startswith("# "):
-        parts.append(f"# {_escape(page.title)}")
+        parts.append(html_to_markdown(f"<h1>{html.escape(page.title)}</h1>"))
     if page.markdown:
         parts.append(page.markdown)
     try:
