@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Chunking strategies for RAG | Example Engineering Blog</title>
+  <link rel="stylesheet" href="/static/site.css">
+  <script src="/static/analytics.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <nav class="main-nav">
+      <a href="/">Home</a> <a href="/blog/">Blog</a> <a href="/about/">About</a>
+    </nav>
+  </header>
+  <div id="cookie-consent">We use cookies to improve your experience. <button>Accept</button></div>
+
+  <main id="content">
+    <article>
+      <header>
+        <h1>Chunking strategies for RAG</h1>
+        <p class="byline">By <a href="/authors/ana/">Ana Souza</a> · 6 min read</p>
+      </header>
+
+      <p>Retrieval quality depends on <strong>how you split documents</strong> before
+      embedding them. Chunks that are too small lose context; chunks that are too large
+      dilute the match.</p>
+
+      <h2>Three common approaches</h2>
+      <ol>
+        <li><b>Fixed size</b> with overlap, e.g. 800 characters and 120 of overlap.</li>
+        <li><b>Recursive</b> splitting on paragraphs, then sentences.</li>
+        <li><b>Semantic</b> splitting where the topic changes.</li>
+      </ol>
+
+      <pre><code class="language-python">def chunk(text, size=800, overlap=120):
+    # Slide a window over the text.
+    step = size - overlap
+    return [text[i:i + size] for i in range(0, len(text), step)]</code></pre>
+
+      <table>
+        <thead><tr><th>Strategy</th><th>Recall@5</th><th>Index size</th></tr></thead>
+        <tbody>
+          <tr><td>Fixed</td><td>0.71</td><td>1.0×</td></tr>
+          <tr><td>Recursive</td><td>0.78</td><td>1.1×</td></tr>
+        </tbody>
+      </table>
+
+      <blockquote><p>Measure on your own questions before picking one.</p></blockquote>
+
+      <div class="share-buttons">
+        <a href="https://x.com/share">Share on X</a> <a href="https://linkedin.com/share">LinkedIn</a>
+      </div>
+      <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="/img/recall.png" alt="Recall by chunk size">
+    </article>
+    <section class="comments">
+      <h3>2 comments</h3>
+      <article><p>Great post!</p></article>
+    </section>
+  </main>
+
+  <aside class="sidebar"><h3>Related posts</h3><ul><li><a href="/blog/bm25/">BM25 explained</a></li></ul></aside>
+  <footer class="site-footer"><p>© 2026 Example Inc. · <a href="/privacy/">Privacy</a></p></footer>
+</body>
+</html>
